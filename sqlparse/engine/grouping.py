@@ -19,6 +19,12 @@ MAX_GROUPING_DEPTH = 100
 # Set to None to disable limit (not recommended for untrusted input)
 MAX_GROUPING_TOKENS = 10000
 
+# Sentinel used on the public entry points to distinguish "caller did not
+# pass a limit" from "caller explicitly passed None to disable the limit".
+# Keeping the default unset means the module-level constants above remain
+# the single source of the default protection behavior.
+_USE_DEFAULT = object()
+
 T_NUMERICAL = (T.Number, T.Number.Integer, T.Number.Float)
 T_STRING = (T.String, T.String.Single, T.String.Symbol)
 T_NAME = (T.Name, T.Name.Placeholder)
@@ -28,18 +34,55 @@ _DELIMITED_GROUPS = (sql.Parenthesis, sql.SquareBrackets, sql.Case,
                      sql.If, sql.For, sql.Begin)
 
 
-def _group_matching(tlist, cls, depth=0):
-    """Groups Tokens that have beginning and end."""
-    if MAX_GROUPING_DEPTH is not None and depth > MAX_GROUPING_DEPTH:
+def _validate_limit(name, value):
+    """Validate a caller-supplied grouping limit.
+
+    A limit is either ``None`` (the limit is disabled) or a positive
+    integer.  Booleans are rejected even though they are technically
+    integers, because ``True``/``False`` are almost certainly a mistake
+    (``False`` would otherwise silently disable the limit).
+    """
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
         raise SQLParseError(
-            f"Maximum grouping depth exceeded ({MAX_GROUPING_DEPTH})."
+            f"Invalid value for {name}: {value!r} "
+            "(expected a positive integer or None)"
+        )
+    if value <= 0:
+        raise SQLParseError(
+            f"Invalid value for {name}: {value!r} "
+            "(expected a positive integer or None)"
+        )
+
+
+def _resolve_limit(name, value, default):
+    """Map the entry-point sentinel onto the module-level default limit."""
+    if value is _USE_DEFAULT:
+        return default
+    _validate_limit(name, value)
+    return value
+
+
+def _group_matching(tlist, cls, depth=0,
+                    max_grouping_depth=_USE_DEFAULT,
+                    max_grouping_tokens=_USE_DEFAULT):
+    """Groups Tokens that have beginning and end."""
+    if max_grouping_depth is _USE_DEFAULT:
+        max_grouping_depth = MAX_GROUPING_DEPTH
+    if max_grouping_tokens is _USE_DEFAULT:
+        max_grouping_tokens = MAX_GROUPING_TOKENS
+
+    if max_grouping_depth is not None and depth > max_grouping_depth:
+        raise SQLParseError(
+            f"Maximum grouping depth exceeded ({max_grouping_depth})."
         )
 
     # Limit the number of tokens to prevent DoS attacks
-    if MAX_GROUPING_TOKENS is not None \
-       and len(tlist.tokens) > MAX_GROUPING_TOKENS:
+    if max_grouping_tokens is not None \
+       and len(tlist.tokens) > max_grouping_tokens:
         raise SQLParseError(
-            f"Maximum number of tokens exceeded ({MAX_GROUPING_TOKENS})."
+            f"Maximum number of tokens exceeded ({max_grouping_tokens})."
         )
 
     opens = []
@@ -59,7 +102,10 @@ def _group_matching(tlist, cls, depth=0):
             # Check inside previously grouped (i.e. parenthesis) if group
             # of different type is inside (i.e., case). though ideally  should
             # should check for all open/close tokens at once to avoid recursion
-            _group_matching(token, cls, depth + 1)
+            _group_matching(
+                token, cls, depth + 1,
+                max_grouping_depth=max_grouping_depth,
+                max_grouping_tokens=max_grouping_tokens)
             continue
 
         if token.match(*cls.M_OPEN):
@@ -77,31 +123,50 @@ def _group_matching(tlist, cls, depth=0):
             tidx_offset += close_idx - open_idx
 
 
-def group_brackets(tlist):
-    _group_matching(tlist, sql.SquareBrackets)
+def group_brackets(tlist, max_grouping_depth=_USE_DEFAULT,
+                   max_grouping_tokens=_USE_DEFAULT):
+    _group_matching(tlist, sql.SquareBrackets,
+                    max_grouping_depth=max_grouping_depth,
+                    max_grouping_tokens=max_grouping_tokens)
 
 
-def group_parenthesis(tlist):
-    _group_matching(tlist, sql.Parenthesis)
+def group_parenthesis(tlist, max_grouping_depth=_USE_DEFAULT,
+                      max_grouping_tokens=_USE_DEFAULT):
+    _group_matching(tlist, sql.Parenthesis,
+                    max_grouping_depth=max_grouping_depth,
+                    max_grouping_tokens=max_grouping_tokens)
 
 
-def group_case(tlist):
-    _group_matching(tlist, sql.Case)
+def group_case(tlist, max_grouping_depth=_USE_DEFAULT,
+               max_grouping_tokens=_USE_DEFAULT):
+    _group_matching(tlist, sql.Case,
+                    max_grouping_depth=max_grouping_depth,
+                    max_grouping_tokens=max_grouping_tokens)
 
 
-def group_if(tlist):
-    _group_matching(tlist, sql.If)
+def group_if(tlist, max_grouping_depth=_USE_DEFAULT,
+             max_grouping_tokens=_USE_DEFAULT):
+    _group_matching(tlist, sql.If,
+                    max_grouping_depth=max_grouping_depth,
+                    max_grouping_tokens=max_grouping_tokens)
 
 
-def group_for(tlist):
-    _group_matching(tlist, sql.For)
+def group_for(tlist, max_grouping_depth=_USE_DEFAULT,
+              max_grouping_tokens=_USE_DEFAULT):
+    _group_matching(tlist, sql.For,
+                    max_grouping_depth=max_grouping_depth,
+                    max_grouping_tokens=max_grouping_tokens)
 
 
-def group_begin(tlist):
-    _group_matching(tlist, sql.Begin)
+def group_begin(tlist, max_grouping_depth=_USE_DEFAULT,
+                max_grouping_tokens=_USE_DEFAULT):
+    _group_matching(tlist, sql.Begin,
+                    max_grouping_depth=max_grouping_depth,
+                    max_grouping_tokens=max_grouping_tokens)
 
 
-def group_typecasts(tlist):
+def group_typecasts(tlist, max_grouping_depth=_USE_DEFAULT,
+                    max_grouping_tokens=_USE_DEFAULT):
     def match(token):
         return token.match(T.Punctuation, '::')
 
@@ -112,10 +177,13 @@ def group_typecasts(tlist):
         return pidx, nidx
 
     valid_prev = valid_next = valid
-    _group(tlist, sql.Identifier, match, valid_prev, valid_next, post)
+    _group(tlist, sql.Identifier, match, valid_prev, valid_next, post,
+           max_grouping_depth=max_grouping_depth,
+           max_grouping_tokens=max_grouping_tokens)
 
 
-def group_tzcasts(tlist):
+def group_tzcasts(tlist, max_grouping_depth=_USE_DEFAULT,
+                  max_grouping_tokens=_USE_DEFAULT):
     def match(token):
         return token.ttype == T.Keyword.TZCast
 
@@ -132,14 +200,17 @@ def group_tzcasts(tlist):
     def post(tlist, pidx, tidx, nidx):
         return pidx, nidx
 
-    _group(tlist, sql.Identifier, match, valid_prev, valid_next, post)
+    _group(tlist, sql.Identifier, match, valid_prev, valid_next, post,
+           max_grouping_depth=max_grouping_depth,
+           max_grouping_tokens=max_grouping_tokens)
 
 
-def group_typed_literal(tlist):
+def group_typed_literal(tlist, max_grouping_depth=_USE_DEFAULT,
+                        max_grouping_tokens=_USE_DEFAULT):
     # definitely not complete, see e.g.:
     # https://docs.microsoft.com/en-us/sql/odbc/reference/appendixes/interval-literal-syntax
-    # https://docs.microsoft.com/en-us/sql/odbc/reference/appendixes/interval-literals
-    # https://www.postgresql.org/docs/9.1/datatype-datetime.html
+    # https://docs.microsoft.com/en-us/sql/odbc/reference/appendixes/interval-literal
+    # https://www.postgresql.org/docs/9.1/datatype/datetime.html
     # https://www.postgresql.org/docs/9.1/functions-datetime.html
     def match(token):
         return imt(token, m=sql.TypedLiteral.M_OPEN)
@@ -160,12 +231,17 @@ def group_typed_literal(tlist):
         return tidx, nidx
 
     _group(tlist, sql.TypedLiteral, match, valid_prev, valid_next,
-           post, extend=False)
+           post, extend=False,
+           max_grouping_depth=max_grouping_depth,
+           max_grouping_tokens=max_grouping_tokens)
     _group(tlist, sql.TypedLiteral, match_to_extend, valid_prev, valid_final,
-           post, extend=True)
+           post, extend=True,
+           max_grouping_depth=max_grouping_depth,
+           max_grouping_tokens=max_grouping_tokens)
 
 
-def group_period(tlist):
+def group_period(tlist, max_grouping_depth=_USE_DEFAULT,
+                 max_grouping_tokens=_USE_DEFAULT):
     def match(token):
         for ttype, value in ((T.Punctuation, '.'),
                              (T.Operator, '->'),
@@ -192,10 +268,13 @@ def group_period(tlist):
 
         return (pidx, nidx) if valid_next else (pidx, tidx)
 
-    _group(tlist, sql.Identifier, match, valid_prev, valid_next, post)
+    _group(tlist, sql.Identifier, match, valid_prev, valid_next, post,
+           max_grouping_depth=max_grouping_depth,
+           max_grouping_tokens=max_grouping_tokens)
 
 
-def group_as(tlist):
+def group_as(tlist, max_grouping_depth=_USE_DEFAULT,
+             max_grouping_tokens=_USE_DEFAULT):
     def match(token):
         return token.is_keyword and token.normalized == 'AS'
 
@@ -209,10 +288,13 @@ def group_as(tlist):
     def post(tlist, pidx, tidx, nidx):
         return pidx, nidx
 
-    _group(tlist, sql.Identifier, match, valid_prev, valid_next, post)
+    _group(tlist, sql.Identifier, match, valid_prev, valid_next, post,
+           max_grouping_depth=max_grouping_depth,
+           max_grouping_tokens=max_grouping_tokens)
 
 
-def group_assignment(tlist):
+def group_assignment(tlist, max_grouping_depth=_USE_DEFAULT,
+                     max_grouping_tokens=_USE_DEFAULT):
     def match(token):
         return token.match(T.Assignment, ':=')
 
@@ -226,10 +308,13 @@ def group_assignment(tlist):
         return pidx, nidx
 
     valid_prev = valid_next = valid
-    _group(tlist, sql.Assignment, match, valid_prev, valid_next, post)
+    _group(tlist, sql.Assignment, match, valid_prev, valid_next, post,
+           max_grouping_depth=max_grouping_depth,
+           max_grouping_tokens=max_grouping_tokens)
 
 
-def group_comparison(tlist):
+def group_comparison(tlist, max_grouping_depth=_USE_DEFAULT,
+                     max_grouping_tokens=_USE_DEFAULT):
     sqlcls = (sql.Parenthesis, sql.Function, sql.Identifier,
               sql.Operation, sql.TypedLiteral)
     ttypes = T_NUMERICAL + T_STRING + T_NAME
@@ -245,11 +330,14 @@ def group_comparison(tlist):
 
     valid_prev = valid_next = valid
     _group(tlist, sql.Comparison, match,
-           valid_prev, valid_next, post, extend=False)
+           valid_prev, valid_next, post, extend=False,
+           max_grouping_depth=max_grouping_depth,
+           max_grouping_tokens=max_grouping_tokens)
 
 
 @recurse(sql.Identifier)
-def group_identifier(tlist):
+def group_identifier(tlist, max_grouping_depth=_USE_DEFAULT,
+                     max_grouping_tokens=_USE_DEFAULT):
     ttypes = (T.String.Symbol, T.Name)
 
     tidx, token = tlist.token_next_by(t=ttypes)
@@ -259,7 +347,8 @@ def group_identifier(tlist):
 
 
 @recurse(sql.Over)
-def group_over(tlist):
+def group_over(tlist, max_grouping_depth=_USE_DEFAULT,
+               max_grouping_tokens=_USE_DEFAULT):
     tidx, token = tlist.token_next_by(m=sql.Over.M_OPEN)
     while token:
         nidx, next_ = tlist.token_next(tidx)
@@ -268,7 +357,8 @@ def group_over(tlist):
         tidx, token = tlist.token_next_by(m=sql.Over.M_OPEN, idx=tidx)
 
 
-def group_arrays(tlist):
+def group_arrays(tlist, max_grouping_depth=_USE_DEFAULT,
+                 max_grouping_tokens=_USE_DEFAULT):
     sqlcls = sql.SquareBrackets, sql.Identifier, sql.Function
     ttypes = T.Name, T.String.Symbol
 
@@ -285,10 +375,13 @@ def group_arrays(tlist):
         return pidx, tidx
 
     _group(tlist, sql.Identifier, match,
-           valid_prev, valid_next, post, extend=True, recurse=False)
+           valid_prev, valid_next, post, extend=True, recurse=False,
+           max_grouping_depth=max_grouping_depth,
+           max_grouping_tokens=max_grouping_tokens)
 
 
-def group_operator(tlist):
+def group_operator(tlist, max_grouping_depth=_USE_DEFAULT,
+                   max_grouping_tokens=_USE_DEFAULT):
     ttypes = T_NUMERICAL + T_STRING + T_NAME
     sqlcls = (sql.SquareBrackets, sql.Parenthesis, sql.Function,
               sql.Identifier, sql.Operation, sql.TypedLiteral)
@@ -308,10 +401,13 @@ def group_operator(tlist):
 
     valid_prev = valid_next = valid
     _group(tlist, sql.Operation, match,
-           valid_prev, valid_next, post, extend=False)
+           valid_prev, valid_next, post, extend=False,
+           max_grouping_depth=max_grouping_depth,
+           max_grouping_tokens=max_grouping_tokens)
 
 
-def group_identifier_list(tlist):
+def group_identifier_list(tlist, max_grouping_depth=_USE_DEFAULT,
+                          max_grouping_tokens=_USE_DEFAULT):
     m_role = T.Keyword, ('null', 'role')
     sqlcls = (sql.Function, sql.Case, sql.Identifier, sql.Comparison,
               sql.IdentifierList, sql.Operation)
@@ -329,11 +425,14 @@ def group_identifier_list(tlist):
 
     valid_prev = valid_next = valid
     _group(tlist, sql.IdentifierList, match,
-           valid_prev, valid_next, post, extend=True)
+           valid_prev, valid_next, post, extend=True,
+           max_grouping_depth=max_grouping_depth,
+           max_grouping_tokens=max_grouping_tokens)
 
 
 @recurse(sql.Comment)
-def group_comments(tlist):
+def group_comments(tlist, max_grouping_depth=_USE_DEFAULT,
+                   max_grouping_tokens=_USE_DEFAULT):
     tidx, token = tlist.token_next_by(t=T.Comment)
     while token:
         eidx, end = tlist.token_not_matching(
@@ -351,7 +450,8 @@ def group_comments(tlist):
 
 
 @recurse(sql.Where)
-def group_where(tlist):
+def group_where(tlist, max_grouping_depth=_USE_DEFAULT,
+                max_grouping_tokens=_USE_DEFAULT):
     tidx, token = tlist.token_next_by(m=sql.Where.M_OPEN)
     while token:
         eidx, end = tlist.token_next_by(m=sql.Where.M_CLOSE, idx=tidx)
@@ -368,7 +468,8 @@ def group_where(tlist):
 
 
 @recurse()
-def group_aliased(tlist):
+def group_aliased(tlist, max_grouping_depth=_USE_DEFAULT,
+                  max_grouping_tokens=_USE_DEFAULT):
     I_ALIAS = (sql.Parenthesis, sql.Function, sql.Case, sql.Identifier,
                sql.Operation, sql.Comparison)
 
@@ -381,7 +482,8 @@ def group_aliased(tlist):
 
 
 @recurse(sql.Function)
-def group_functions(tlist):
+def group_functions(tlist, max_grouping_depth=_USE_DEFAULT,
+                    max_grouping_tokens=_USE_DEFAULT):
     has_create = False
     has_table = False
     has_as = False
@@ -409,7 +511,8 @@ def group_functions(tlist):
 
 
 @recurse(sql.Identifier)
-def group_order(tlist):
+def group_order(tlist, max_grouping_depth=_USE_DEFAULT,
+                max_grouping_tokens=_USE_DEFAULT):
     """Group together Identifier and Asc/Desc token"""
     tidx, token = tlist.token_next_by(t=T.Keyword.Order)
     while token:
@@ -421,7 +524,8 @@ def group_order(tlist):
 
 
 @recurse()
-def align_comments(tlist):
+def align_comments(tlist, max_grouping_depth=_USE_DEFAULT,
+                   max_grouping_tokens=_USE_DEFAULT):
     tidx, token = tlist.token_next_by(i=sql.Comment)
     while token:
         pidx, prev_ = tlist.token_prev(tidx)
@@ -431,7 +535,8 @@ def align_comments(tlist):
         tidx, token = tlist.token_next_by(i=sql.Comment, idx=tidx)
 
 
-def group_values(tlist):
+def group_values(tlist, max_grouping_depth=_USE_DEFAULT,
+                 max_grouping_tokens=_USE_DEFAULT):
     tidx, token = tlist.token_next_by(m=(T.Keyword, 'VALUES'))
     start_idx = tidx
     end_idx = -1
@@ -443,7 +548,14 @@ def group_values(tlist):
         tlist.group_tokens(sql.Values, start_idx, end_idx, extend=True)
 
 
-def group(stmt):
+def group(stmt, max_grouping_depth=_USE_DEFAULT,
+          max_grouping_tokens=_USE_DEFAULT):
+    # Fail fast on invalid caller input, before any grouping work happens.
+    max_grouping_depth = _resolve_limit(
+        'max_grouping_depth', max_grouping_depth, MAX_GROUPING_DEPTH)
+    max_grouping_tokens = _resolve_limit(
+        'max_grouping_tokens', max_grouping_tokens, MAX_GROUPING_TOKENS)
+
     for func in [
         group_comments,
 
@@ -475,7 +587,9 @@ def group(stmt):
         group_identifier_list,
         group_values,
     ]:
-        func(stmt)
+        func(stmt,
+             max_grouping_depth=max_grouping_depth,
+             max_grouping_tokens=max_grouping_tokens)
     return stmt
 
 
@@ -498,19 +612,26 @@ def _group(tlist, cls, match,
            post=None,
            extend=True,
            recurse=True,
-           depth=0
+           depth=0,
+           max_grouping_depth=_USE_DEFAULT,
+           max_grouping_tokens=_USE_DEFAULT,
            ):
     """Groups together tokens that are joined by a middle token. i.e. x < y"""
-    if MAX_GROUPING_DEPTH is not None and depth > MAX_GROUPING_DEPTH:
+    if max_grouping_depth is _USE_DEFAULT:
+        max_grouping_depth = MAX_GROUPING_DEPTH
+    if max_grouping_tokens is _USE_DEFAULT:
+        max_grouping_tokens = MAX_GROUPING_TOKENS
+
+    if max_grouping_depth is not None and depth > max_grouping_depth:
         raise SQLParseError(
-            f"Maximum grouping depth exceeded ({MAX_GROUPING_DEPTH})."
+            f"Maximum grouping depth exceeded ({max_grouping_depth})."
         )
 
     # Limit the number of tokens to prevent DoS attacks
-    if MAX_GROUPING_TOKENS is not None \
-       and len(tlist.tokens) > MAX_GROUPING_TOKENS:
+    if max_grouping_tokens is not None \
+       and len(tlist.tokens) > max_grouping_tokens:
         raise SQLParseError(
-            f"Maximum number of tokens exceeded ({MAX_GROUPING_TOKENS})."
+            f"Maximum number of tokens exceeded ({max_grouping_tokens})."
         )
 
     tidx_offset = 0
@@ -527,7 +648,9 @@ def _group(tlist, cls, match,
 
         if recurse and token.is_group and not isinstance(token, cls):
             _group(token, cls, match, valid_prev, valid_next,
-                   post, extend, True, depth + 1)
+                   post, extend=extend, recurse=True, depth=depth + 1,
+                   max_grouping_depth=max_grouping_depth,
+                   max_grouping_tokens=max_grouping_tokens)
 
         if match(token):
             nidx, next_ = tlist.token_next(tidx)

@@ -18,27 +18,48 @@ __all__ = ["cli", "engine", "filters", "formatter", "sql", "tokens"]
 
 
 def parse(
-    sql: str, encoding: str | None = None
+    sql: str,
+    encoding: str | None = None,
+    max_grouping_depth: int | object = engine.grouping._USE_DEFAULT,
+    max_grouping_tokens: int | object = engine.grouping._USE_DEFAULT,
 ) -> tuple[sql.Statement, ...]:
     """Parse sql and return a list of statements.
 
     :param sql: A string containing one or more SQL statements.
     :param encoding: The encoding of the statement (optional).
+    :param max_grouping_depth: Override for the grouping recursion depth
+        limit (default: 100). ``None`` disables the limit.
+    :param max_grouping_tokens: Override for the maximum number of tokens
+        processed in a single grouping operation (default: 10000).
+        ``None`` disables the limit.
     :returns: A tuple of :class:`~sqlparse.sql.Statement` instances.
     """
-    return tuple(parsestream(sql, encoding))
+    return tuple(parsestream(
+        sql, encoding,
+        max_grouping_depth=max_grouping_depth,
+        max_grouping_tokens=max_grouping_tokens))
 
 
 def parsestream(
-    stream: str | IO[str], encoding: str | None = None
+    stream: str | IO[str],
+    encoding: str | None = None,
+    max_grouping_depth: int | object = engine.grouping._USE_DEFAULT,
+    max_grouping_tokens: int | object = engine.grouping._USE_DEFAULT,
 ) -> Generator[sql.Statement, None, None]:
     """Parses sql statements from file-like object.
 
     :param stream: A file-like object.
     :param encoding: The encoding of the stream contents (optional).
+    :param max_grouping_depth: Override for the grouping recursion depth
+        limit (default: 100). ``None`` disables the limit.
+    :param max_grouping_tokens: Override for the maximum number of tokens
+        processed in a single grouping operation (default: 10000).
+        ``None`` disables the limit.
     :returns: A generator of :class:`~sqlparse.sql.Statement` instances.
     """
-    stack = engine.FilterStack()
+    stack = engine.FilterStack(
+        max_grouping_depth=max_grouping_depth,
+        max_grouping_tokens=max_grouping_tokens)
     stack.enable_grouping()
     return stack.run(stream, encoding)
 
@@ -49,11 +70,19 @@ def format(sql: str, encoding: str | None = None, **options: Any) -> str:
     Available options are documented in :ref:`formatting`.
 
     In addition to the formatting options this function accepts the
-    keyword "encoding" which determines the encoding of the statement.
+    keyword "encoding" which determines the encoding of the statement,
+    as well as "max_grouping_depth" and "max_grouping_tokens" which
+    override the grouping-stage DoS protection limits.
 
     :returns: The formatted SQL statement as string.
     """
-    stack = engine.FilterStack()
+    max_grouping_depth = options.pop(
+        'max_grouping_depth', engine.grouping._USE_DEFAULT)
+    max_grouping_tokens = options.pop(
+        'max_grouping_tokens', engine.grouping._USE_DEFAULT)
+    stack = engine.FilterStack(
+        max_grouping_depth=max_grouping_depth,
+        max_grouping_tokens=max_grouping_tokens)
     options = formatter.validate_options(options)
     stack = formatter.build_filter_stack(stack, options)
     stack.postprocess.append(filters.SerializerUnicode())

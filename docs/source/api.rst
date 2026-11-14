@@ -99,12 +99,38 @@ of service (DoS) attacks:
   - ``MAX_GROUPING_DEPTH`` (default: 100) - Limits recursion depth during token grouping
   - ``MAX_GROUPING_TOKENS`` (default: 10,000) - Limits the number of tokens processed in a single grouping operation
 
-  These limits can be modified by changing the constants in ``sqlparse.engine.grouping``
-  if your application requires processing larger SQL statements. Set a limit to ``None``
-  to completely disable it. However, increasing these values or disabling limits may
-  expose your application to DoS vulnerabilities when processing untrusted SQL input.
+  These limits can be supplied per call through the ``max_grouping_depth``
+  and ``max_grouping_tokens`` keyword arguments of :func:`sqlparse.parse`,
+  :func:`sqlparse.parsestream` and :func:`sqlparse.format`, or via the
+  constructor of :class:`~sqlparse.engine.FilterStack`.  The values are
+  threaded through the parse entry point all the way down to the grouping
+  engine.  Each value must be a positive integer or ``None``; ``None``
+  disables that limit.  Invalid values (non-integers, zero or negative
+  numbers, including booleans) raise :class:`~sqlparse.exceptions.SQLParseError`.
+  When the arguments are omitted the module-level defaults below apply
+  unchanged, preserving the built-in protection behavior::
 
-  Example of modifying limits::
+    import sqlparse
+
+    # Raise the limits for a known, legitimate large statement
+    sqlparse.parse(large_sql, max_grouping_depth=200,
+                   max_grouping_tokens=50000)
+
+    # The same parameters work with format()
+    sqlparse.format(large_sql, reindent=True,
+                    max_grouping_tokens=50000)
+
+    # Disable a limit explicitly (use with extreme caution)
+    sqlparse.parse(large_sql, max_grouping_depth=None,
+                   max_grouping_tokens=None)
+
+  The limits can also be modified globally by changing the constants in
+  ``sqlparse.engine.grouping``, which remain the source of the default
+  values. Set a limit to ``None`` to completely disable it. However,
+  increasing these values or disabling limits may expose your application
+  to DoS vulnerabilities when processing untrusted SQL input.
+
+  Example of modifying the global defaults::
 
     import sqlparse.engine.grouping
 

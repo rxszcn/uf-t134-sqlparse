@@ -15,11 +15,21 @@ from sqlparse.filters import StripTrailingSemicolonFilter
 
 
 class FilterStack:
-    def __init__(self, strip_semicolon=False):
+    def __init__(self, strip_semicolon=False,
+                 max_grouping_depth=grouping._USE_DEFAULT,
+                 max_grouping_tokens=grouping._USE_DEFAULT):
         self.preprocess = []
         self.stmtprocess = []
         self.postprocess = []
         self._grouping = False
+        # Validate eagerly so a misconfigured caller fails at stack
+        # construction rather than halfway through processing a stream.
+        self.max_grouping_depth = grouping._resolve_limit(
+            'max_grouping_depth', max_grouping_depth,
+            grouping.MAX_GROUPING_DEPTH)
+        self.max_grouping_tokens = grouping._resolve_limit(
+            'max_grouping_tokens', max_grouping_tokens,
+            grouping.MAX_GROUPING_TOKENS)
         if strip_semicolon:
             self.stmtprocess.append(StripTrailingSemicolonFilter())
 
@@ -38,7 +48,10 @@ class FilterStack:
             # Output: Stream processed Statements
             for stmt in stream:
                 if self._grouping:
-                    stmt = grouping.group(stmt)
+                    stmt = grouping.group(
+                        stmt,
+                        max_grouping_depth=self.max_grouping_depth,
+                        max_grouping_tokens=self.max_grouping_tokens)
 
                 for filter_ in self.stmtprocess:
                     filter_.process(stmt)

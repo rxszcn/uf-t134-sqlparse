@@ -1,3 +1,19 @@
+Unreleased
+----------
+
+Enhancements
+
+* The grouping-stage DoS protection limits are now configurable per call.
+  ``parse()``, ``parsestream()``, ``format()`` and ``FilterStack`` accept
+  ``max_grouping_depth`` and ``max_grouping_tokens`` arguments that are
+  threaded through to the grouping engine, so legitimate large statements
+  can be parsed without weakening the global defaults. A value must be a
+  positive integer or ``None`` (disable that limit); other values,
+  including booleans, zero and negative numbers, raise ``SQLParseError``.
+  Omitting the arguments keeps the previous behavior exactly, including
+  the default limits of 100 / 10000.
+
+
 Release 0.6.1 (Nov 01, 2026)
 ----------------------------
 

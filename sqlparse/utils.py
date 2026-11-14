@@ -71,11 +71,11 @@ def recurse(*cls):
     :return: function
     """
     def wrap(f):
-        def wrapped_f(tlist):
+        def wrapped_f(tlist, **kwargs):
             for sgroup in tlist.get_sublists():
                 if not isinstance(sgroup, cls):
-                    wrapped_f(sgroup)
-            f(tlist)
+                    wrapped_f(sgroup, **kwargs)
+            f(tlist, **kwargs)
 
         return wrapped_f
 
